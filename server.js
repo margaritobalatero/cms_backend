@@ -30,6 +30,7 @@ mongoose.connect(MONGO_URI, {
   process.exit(1);
 });
 
+// --- Middleware for JWT ---
 function requireAuth(req, res, next) {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) return res.status(401).json({ message: "No token" });
@@ -43,7 +44,6 @@ function requireAuth(req, res, next) {
   }
 }
 
-
 // --- Article Schema ---
 const articleSchema = new mongoose.Schema({
   title: { type: String, required: true },
@@ -53,24 +53,25 @@ const articleSchema = new mongoose.Schema({
 
 const Article = mongoose.model('Article', articleSchema);
 
-// ===== User Schema for MetaMask Login =====
+// --- User Schema (MetaMask Login) ---
 const userSchema = new mongoose.Schema({
-  wallet: { type: String, unique: true, required: true },
+  wallet: { type: String, unique: true, required: true, lowercase: true },
   nonce: { type: String, default: () => Math.floor(Math.random() * 1000000).toString() }
 });
 
 const User = mongoose.model("User", userSchema);
-
 
 // Helper to validate ObjectId
 const isValidObjectId = id => mongoose.Types.ObjectId.isValid(id);
 
 // ==================== ROUTES ====================
 
+// Protected route example
 app.get("/api/secret", requireAuth, (req, res) => {
   res.json({ message: "You are logged in!", wallet: req.user.wallet });
 });
 
+// ==================== ARTICLE ROUTES ====================
 
 // Get all articles
 app.get('/api/articles', async (req, res) => {
@@ -170,13 +171,12 @@ app.delete('/api/articles/:id', async (req, res) => {
   }
 });
 
+// ==================== AUTH ROUTES ====================
 
-
-
-// ====== Request Nonce ======
+// Request nonce (Sign-In)
 app.post("/auth/request-nonce", async (req, res) => {
   try {
-    const { wallet } = req.body;
+    const wallet = req.body.wallet?.toLowerCase();
     if (!wallet) return res.status(400).json({ message: "Wallet address required" });
 
     let user = await User.findOne({ wallet });
@@ -184,22 +184,22 @@ app.post("/auth/request-nonce", async (req, res) => {
     if (!user) {
       user = await User.create({ wallet });
     } else {
-      // Update nonce every request
       user.nonce = Math.floor(Math.random() * 1000000).toString();
       await user.save();
     }
 
     res.json({ wallet, nonce: user.nonce });
   } catch (err) {
-    res.status(500).json({ message: "Server error requesting nonce" });
+    console.error("❌ NONCE ERROR:", err);
+    res.status(500).json({ message: "Server error requesting nonce", error: err });
   }
 });
 
-
-// ====== Verify Signature (Login + Signup Auto) ======
+// Verify signature
 app.post("/auth/verify", async (req, res) => {
   try {
-    const { wallet, signature } = req.body;
+    const wallet = req.body.wallet?.toLowerCase();
+    const signature = req.body.signature;
 
     if (!wallet || !signature)
       return res.status(400).json({ message: "Wallet and signature required" });
@@ -211,8 +211,6 @@ app.post("/auth/verify", async (req, res) => {
 
     // Build message
     const message = `Login nonce: ${user.nonce}`;
-
-    // Convert message to buffer
     const messageBuffer = Buffer.from(message);
     const msgHash = ethUtil.hashPersonalMessage(messageBuffer);
 
@@ -231,17 +229,17 @@ app.post("/auth/verify", async (req, res) => {
 
     // Create JWT token
     const token = jwt.sign(
-      { wallet: wallet },
+      { wallet },
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
     );
 
     res.json({ message: "Login success", token, wallet });
   } catch (err) {
-    res.status(500).json({ message: "Server error verifying signature" });
+    console.error("❌ VERIFY ERROR:", err);
+    res.status(500).json({ message: "Server error verifying signature", error: err });
   }
 });
-
 
 // Start Server
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
