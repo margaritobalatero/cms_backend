@@ -59,19 +59,13 @@ const Article = mongoose.model('Article', articleSchema);
 //   nonce: { type: String, default: () => Math.floor(Math.random() * 1000000).toString() }
 // });
 
-const userSchema = new mongoose.Schema({
-  wallets: [
-    {
-      address: { type: String, required: true },
-      nonce: { type: String, default: () => Math.floor(Math.random() * 1000000).toString() }
-    }
-  ]
+const walletSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  wallet: { type: String, unique: true, required: true },
+  nonce: { type: String, default: () => Math.floor(Math.random() * 1000000).toString() }
 });
 
-await User.updateOne(
-  { _id: userId },
-  { $addToSet: { wallets: { address: newWallet } } }
-);
+await Wallet.create({ userId: user._id, wallet: newWallet });
 
 
 
