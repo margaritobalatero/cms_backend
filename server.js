@@ -33,10 +33,12 @@ const User = mongoose.model("User", userSchema);
 // ============================================
 app.post("/auth/request-nonce", async (req, res) => {
   try {
-    const { userId } = req.body;
+    // Accept both wallet and userId
+    const wallet = req.body.wallet?.toLowerCase();
+    const userId = req.body.userId?.toLowerCase() || wallet;
 
     if (!userId) {
-      return res.status(400).json({ error: "userId is required" });
+      return res.status(400).json({ error: "wallet/userId is required" });
     }
 
     let user = await User.findOne({ userId });
@@ -44,15 +46,14 @@ app.post("/auth/request-nonce", async (req, res) => {
     const newNonce = Math.floor(Math.random() * 1000000);
 
     if (!user) {
-      // Create the user first time
       user = await User.create({ userId, nonce: newNonce });
     } else {
-      // Update nonce every login attempt
       user.nonce = newNonce;
       await user.save();
     }
 
     return res.json({ userId: user.userId, nonce: user.nonce });
+
   } catch (err) {
     console.error("Error in /auth/request-nonce:", err);
     return res.status(500).json({ error: "Server error generating nonce" });
@@ -64,10 +65,12 @@ app.post("/auth/request-nonce", async (req, res) => {
 // ============================================
 app.post("/auth/verify", async (req, res) => {
   try {
-    const { userId, signature } = req.body;
+    const wallet = req.body.wallet?.toLowerCase();
+    const userId = req.body.userId?.toLowerCase() || wallet;
+    const signature = req.body.signature;
 
     if (!userId || !signature) {
-      return res.status(400).json({ error: "userId and signature required" });
+      return res.status(400).json({ error: "wallet/userId and signature required" });
     }
 
     const user = await User.findOne({ userId });
@@ -91,16 +94,15 @@ app.post("/auth/verify", async (req, res) => {
 
     const addressBuffer = ethUtil.pubToAddress(publicKey);
     const recoveredAddress = ethUtil.bufferToHex(addressBuffer).toLowerCase();
-    const normalizedUserId = userId.toLowerCase();
 
-    if (recoveredAddress !== normalizedUserId) {
+    if (recoveredAddress !== userId) {
       return res.status(401).json({ error: "Signature verification failed" });
     }
 
-    // Valid → Sign JWT
     const token = jwt.sign({ userId }, JWT_SECRET, { expiresIn: "7d" });
 
-    return res.json({ token });
+    res.json({ token });
+
   } catch (err) {
     console.error("Error in /auth/verify:", err);
     return res.status(500).json({ error: "Server error verifying signature" });
