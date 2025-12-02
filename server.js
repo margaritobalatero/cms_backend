@@ -215,9 +215,13 @@ app.post("/auth/request-nonce", async (req, res) => {
 
   } catch (err) {
     console.error("🔥 NONCE ERROR:", err);
-    return res.status(500).json({ message: "Server error requesting nonce" });
-  }
+
+return res.status(500).json({
+  message: "Server error requesting nonce",
+  error: err.message,
+  stack: err.stack
 });
+
 
 
 
