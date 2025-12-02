@@ -206,11 +206,21 @@ app.post("/auth/request-nonce", async (req, res) => {
 
     res.json({ wallet, nonce: user.nonce });
 
-  } catch (err) {
-    console.error("Nonce Error:", err);
-    res.status(500).json({ message: "Server error requesting nonce" });
-  }
-});
+//   } catch (err) {
+//     console.error("Nonce Error:", err);
+//     res.status(500).json({ message: "Server error requesting nonce" });
+//   }
+
+
+} catch (err) {
+  console.error("🔥 NONCE ERROR DETAILS:", err.message);
+  console.error(err);
+  return res.status(500).json({
+    message: "Server error requesting nonce",
+    error: err.message
+  });
+}
+ });
 
 
 // ====== Verify Signature (Login) ======
