@@ -68,6 +68,12 @@ const userSchema = new mongoose.Schema({
   ]
 });
 
+await User.updateOne(
+  { _id: userId },
+  { $addToSet: { wallets: { address: newWallet } } }
+);
+
+
 
 const User = mongoose.model("User", userSchema);
 
