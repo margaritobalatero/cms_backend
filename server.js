@@ -43,7 +43,6 @@ function requireAuth(req, res, next) {
   }
 }
 
-
 // --- Article Schema ---
 const articleSchema = new mongoose.Schema({
   title: { type: String, required: true },
@@ -53,24 +52,27 @@ const articleSchema = new mongoose.Schema({
 
 const Article = mongoose.model('Article', articleSchema);
 
-// ===== User Schema for MetaMask Login =====
-// const userSchema = new mongoose.Schema({
-//   wallet: { type: String, unique: true, required: true },
-//   nonce: { type: String, default: () => Math.floor(Math.random() * 1000000).toString() }
-// });
-
-const walletSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  wallet: { type: String, unique: true, required: true },
-  nonce: { type: String, default: () => Math.floor(Math.random() * 1000000).toString() }
+// ===== User Schema for Multiple Wallets =====
+const userSchema = new mongoose.Schema({
+  wallets: {
+    type: [String],  // array of wallet addresses
+    required: true,
+    validate: {
+      validator: function(v) {
+        return v.length > 0;
+      },
+      message: 'At least one wallet is required'
+    }
+  },
+  nonce: { 
+    type: String, 
+    default: () => Math.floor(Math.random() * 1000000).toString() 
+  }
 });
-
-
 
 const User = mongoose.model("User", userSchema);
 
-
-// Helper to validate ObjectId
+// Helper
 const isValidObjectId = id => mongoose.Types.ObjectId.isValid(id);
 
 // ==================== ROUTES ====================
@@ -78,7 +80,6 @@ const isValidObjectId = id => mongoose.Types.ObjectId.isValid(id);
 app.get("/api/secret", requireAuth, (req, res) => {
   res.json({ message: "You are logged in!", wallet: req.user.wallet });
 });
-
 
 // Get all articles
 app.get('/api/articles', async (req, res) => {
@@ -106,7 +107,7 @@ app.get('/api/articles/search', async (req, res) => {
   }
 });
 
-// Get single article
+// Get one article
 app.get('/api/articles/:id', async (req, res) => {
   const { id } = req.params;
   if (!isValidObjectId(id)) return res.status(400).json({ message: 'Invalid article ID' });
@@ -179,7 +180,7 @@ app.delete('/api/articles/:id', async (req, res) => {
 });
 
 
-
+// ===================== METAMASK AUTH =====================
 
 // ====== Request Nonce ======
 app.post("/auth/request-nonce", async (req, res) => {
@@ -187,24 +188,32 @@ app.post("/auth/request-nonce", async (req, res) => {
     const { wallet } = req.body;
     if (!wallet) return res.status(400).json({ message: "Wallet address required" });
 
-    let user = await User.findOne({ wallet });
+    let user = await User.findOne({ wallets: wallet });
 
     if (!user) {
-      user = await User.create({ wallet });
+      // New user → create with one wallet in array
+      user = await User.create({ wallets: [wallet] });
     } else {
-      // Update nonce every request
-      user.nonce = Math.floor(Math.random() * 1000000).toString();
-      await user.save();
+      // Add wallet if not in list
+      if (!user.wallets.includes(wallet)) {
+        user.wallets.push(wallet);
+      }
     }
 
+    // Update nonce
+    user.nonce = Math.floor(Math.random() * 1000000).toString();
+    await user.save();
+
     res.json({ wallet, nonce: user.nonce });
+
   } catch (err) {
+    console.error("Nonce Error:", err);
     res.status(500).json({ message: "Server error requesting nonce" });
   }
 });
 
 
-// ====== Verify Signature (Login + Signup Auto) ======
+// ====== Verify Signature (Login) ======
 app.post("/auth/verify", async (req, res) => {
   try {
     const { wallet, signature } = req.body;
@@ -212,7 +221,7 @@ app.post("/auth/verify", async (req, res) => {
     if (!wallet || !signature)
       return res.status(400).json({ message: "Wallet and signature required" });
 
-    const user = await User.findOne({ wallet });
+    const user = await User.findOne({ wallets: wallet });
 
     if (!user)
       return res.status(404).json({ message: "User not found" });
@@ -220,11 +229,9 @@ app.post("/auth/verify", async (req, res) => {
     // Build message
     const message = `Login nonce: ${user.nonce}`;
 
-    // Convert message to buffer
     const messageBuffer = Buffer.from(message);
     const msgHash = ethUtil.hashPersonalMessage(messageBuffer);
 
-    // Convert signature
     const sig = ethUtil.fromRpcSig(signature);
     const publicKey = ethUtil.ecrecover(msgHash, sig.v, sig.r, sig.s);
     const recoveredWallet = ethUtil.bufferToHex(ethUtil.pubToAddress(publicKey));
@@ -233,23 +240,26 @@ app.post("/auth/verify", async (req, res) => {
       return res.status(401).json({ message: "Signature verification failed" });
     }
 
-    // Success → generate new nonce
+    // Success → new nonce
     user.nonce = Math.floor(Math.random() * 1000000).toString();
     await user.save();
 
-    // Create JWT token
     const token = jwt.sign(
-      { wallet: wallet },
+      { wallet },
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
     );
 
     res.json({ message: "Login success", token, wallet });
+
   } catch (err) {
+    console.error("Verify Error:", err);
     res.status(500).json({ message: "Server error verifying signature" });
   }
 });
 
 
 // Start Server
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+app.listen(PORT, () =>
+  console.log(`🚀 Server running on port ${PORT}`)
+);
