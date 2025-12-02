@@ -1,247 +1,169 @@
-require('dotenv').config(); // Load .env first
+// server.js
+require("dotenv").config();
+const express = require("express");
+const cors = require("cors");
+const cookieParser = require("cookie-parser");
+const { ethers } = require("ethers");
 const jwt = require("jsonwebtoken");
-const ethUtil = require("ethereumjs-util");
-
-const express = require('express');
-const mongoose = require('mongoose');
-const cors = require('cors');
+const path = require("path");
+const mongoose = require("mongoose");
+const Item = require("./models/Item"); // your Item model
 
 const app = express();
-app.use(cors());
-app.use(express.json());
+const PORT = process.env.PORT || 4000;
 
 // --- Environment Variables ---
 const MONGO_URI = process.env.MONGO_URI;
-const PORT = process.env.PORT || 5000;
+const JWT_SECRET = process.env.JWT_SECRET || "supersecretjwtkey";
+
+// --- Middleware ---
+app.use(cors({ origin: true, credentials: true }));
+app.use(express.json());
+app.use(cookieParser());
+app.use(express.static(path.join(__dirname, "public"))); // serve static files
 
 // --- Connect to MongoDB ---
-if (!MONGO_URI) {
-  console.error("❌ ERROR: MONGO_URI is missing from .env");
-  process.exit(1);
-}
+mongoose
+  .connect(MONGO_URI)
+  .then(() => console.log("MongoDB connected"))
+  .catch((err) => console.error("MongoDB connection error:", err));
 
-mongoose.connect(MONGO_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
-.then(() => console.log('✅ MongoDB connected'))
-.catch(err => {
-  console.error('❌ MongoDB connection error:', err);
-  process.exit(1);
+// --- In-memory nonce map ---
+const nonces = new Map();
+
+// =====================
+//      AUTH ROUTES
+// =====================
+
+// Request nonce for MetaMask login
+app.post("/auth/request-nonce", (req, res) => {
+  const { wallet } = req.body;
+  if (!wallet) return res.status(400).json({ error: "wallet address required" });
+
+  const nonce = `Login nonce: ${Math.floor(Math.random() * 1e9)}`;
+  nonces.set(wallet.toLowerCase(), nonce);
+
+  return res.json({ wallet: wallet.toLowerCase(), nonce });
 });
 
+// Verify signature and issue JWT
+app.post("/auth/verify", async (req, res) => {
+  try {
+    const { wallet, signature } = req.body;
+    if (!wallet || !signature)
+      return res.status(400).json({ error: "wallet and signature required" });
+
+    const nonce = nonces.get(wallet.toLowerCase());
+    if (!nonce) return res.status(400).json({ error: "nonce not found, request a new one" });
+
+    // Verify signature using ethers.js
+    const recovered = ethers.utils.verifyMessage(nonce, signature);
+    if (recovered.toLowerCase() !== wallet.toLowerCase()) {
+      return res.status(401).json({ error: "signature verification failed" });
+    }
+
+    // Signature valid → issue JWT
+    const token = jwt.sign({ userId: wallet.toLowerCase() }, JWT_SECRET, { expiresIn: "7d" });
+
+    // Clear nonce after use
+    nonces.delete(wallet.toLowerCase());
+
+    return res.json({ token });
+  } catch (err) {
+    console.error("Error in /auth/verify:", err);
+    return res.status(500).json({ error: "server error verifying signature" });
+  }
+});
+
+// =====================
+//    AUTH MIDDLEWARE
+// =====================
 function requireAuth(req, res, next) {
-  const token = req.headers.authorization?.split(" ")[1];
-  if (!token) return res.status(401).json({ message: "No token" });
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return res.status(401).json({ error: "missing token" });
+
+  const token = authHeader.split(" ")[1]; // Bearer <token>
+  if (!token) return res.status(401).json({ error: "invalid token format" });
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded;
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded; // contains userId
     next();
   } catch (err) {
-    res.status(401).json({ message: "Invalid token" });
+    return res.status(401).json({ error: "invalid token" });
   }
 }
 
+// =====================
+//      CRUD ROUTES
+// =====================
 
-// --- Article Schema ---
-const articleSchema = new mongoose.Schema({
-  title: { type: String, required: true },
-  content: { type: String, required: true },
-  createdAt: { type: Date, default: Date.now },
-});
-
-const Article = mongoose.model('Article', articleSchema);
-
-// ===== User Schema for MetaMask Login =====
-const userSchema = new mongoose.Schema({
-  wallet: { type: String, unique: true, required: true },
-  nonce: { type: String, default: () => Math.floor(Math.random() * 1000000).toString() }
-});
-
-const User = mongoose.model("User", userSchema);
-
-
-// Helper to validate ObjectId
-const isValidObjectId = id => mongoose.Types.ObjectId.isValid(id);
-
-// ==================== ROUTES ====================
-
-app.get("/api/secret", requireAuth, (req, res) => {
-  res.json({ message: "You are logged in!", wallet: req.user.wallet });
-});
-
-
-// Get all articles
-app.get('/api/articles', async (req, res) => {
+// Get all articles for logged-in wallet
+app.get("/api/articles", requireAuth, async (req, res) => {
   try {
-    const articles = await Article.find().sort({ createdAt: -1 });
+    const articles = await Item.find({ userId: req.user.userId });
     res.json(articles);
   } catch (err) {
-    res.status(500).json({ message: 'Server error fetching articles' });
-  }
-});
-
-// Search articles
-app.get('/api/articles/search', async (req, res) => {
-  try {
-    const q = req.query.q || "";
-    const results = await Article.find({
-      $or: [
-        { title:   { $regex: q, $options: "i" }},
-        { content: { $regex: q, $options: "i" }}
-      ]
-    });
-    res.json(results);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("Read articles error:", err);
+    res.status(500).json({ error: "Failed to fetch articles" });
   }
 });
 
 // Get single article
-app.get('/api/articles/:id', async (req, res) => {
-  const { id } = req.params;
-  if (!isValidObjectId(id)) return res.status(400).json({ message: 'Invalid article ID' });
-
+app.get("/api/articles/:id", requireAuth, async (req, res) => {
   try {
-    const article = await Article.findById(id);
-    if (!article) return res.status(404).json({ message: 'Article not found' });
+    const article = await Item.findOne({ _id: req.params.id, userId: req.user.userId });
+    if (!article) return res.status(404).json({ error: "Article not found" });
     res.json(article);
   } catch (err) {
-    res.status(500).json({ message: 'Server error fetching article' });
+    console.error("Get article error:", err);
+    res.status(500).json({ error: "Failed to fetch article" });
   }
 });
 
 // Create article
-app.post('/api/articles', async (req, res) => {
-  const { title, content } = req.body;
-  if (!title || !content)
-    return res.status(400).json({ message: 'Title and content are required' });
-
+app.post("/api/articles", requireAuth, async (req, res) => {
   try {
-    const article = new Article({ title, content });
-    const saved = await article.save();
-    res.status(201).json(saved);
+    const data = { ...req.body, userId: req.user.userId };
+    const newArticle = await Item.create(data);
+    res.json(newArticle);
   } catch (err) {
-    res.status(500).json({ message: 'Server error creating article' });
+    console.error("Create article error:", err);
+    res.status(500).json({ error: "Failed to create article" });
   }
 });
 
 // Update article
-app.put('/api/articles/:id', async (req, res) => {
-  const { id } = req.params;
-  const { title, content } = req.body;
-
-  if (!isValidObjectId(id))
-    return res.status(400).json({ message: 'Invalid article ID' });
-
-  if (!title && !content)
-    return res.status(400).json({ message: 'At least one of title or content must be provided' });
-
+app.put("/api/articles/:id", requireAuth, async (req, res) => {
   try {
-    const article = await Article.findById(id);
-    if (!article) return res.status(404).json({ message: 'Article not found' });
-
-    if (title) article.title = title;
-    if (content) article.content = content;
-
-    const updated = await article.save();
-    res.json(updated);
+    const article = await Item.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user.userId },
+      req.body,
+      { new: true }
+    );
+    if (!article) return res.status(404).json({ error: "Article not found" });
+    res.json(article);
   } catch (err) {
-    res.status(500).json({ message: 'Server error updating article' });
+    console.error("Update article error:", err);
+    res.status(500).json({ error: "Failed to update article" });
   }
 });
 
 // Delete article
-app.delete('/api/articles/:id', async (req, res) => {
-  const { id } = req.params;
-
-  if (!isValidObjectId(id))
-    return res.status(400).json({ message: 'Invalid article ID' });
-
+app.delete("/api/articles/:id", requireAuth, async (req, res) => {
   try {
-    const article = await Article.findById(id);
-    if (!article) return res.status(404).json({ message: 'Article not found' });
-
-    await article.deleteOne();
-    res.json({ message: 'Article deleted' });
+    const deleted = await Item.findOneAndDelete({ _id: req.params.id, userId: req.user.userId });
+    if (!deleted) return res.status(404).json({ error: "Article not found" });
+    res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ message: 'Server error deleting article' });
+    console.error("Delete article error:", err);
+    res.status(500).json({ error: "Failed to delete article" });
   }
 });
 
-
-
-
-// ====== Request Nonce ======
-app.post("/auth/request-nonce", async (req, res) => {
-  try {
-    const { wallet } = req.body;
-    if (!wallet) return res.status(400).json({ message: "Wallet address required" });
-
-    let user = await User.findOne({ wallet });
-
-    if (!user) {
-      user = await User.create({ wallet });
-    } else {
-      // Update nonce every request
-      user.nonce = Math.floor(Math.random() * 1000000).toString();
-      await user.save();
-    }
-
-    res.json({ wallet, nonce: user.nonce });
-  } catch (err) {
-    res.status(500).json({ message: "Server error requesting nonce" });
-  }
+// =====================
+//      START SERVER
+// =====================
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
-
-
-// ====== Verify Signature (Login + Signup Auto) ======
-app.post("/auth/verify", async (req, res) => {
-  try {
-    const { wallet, signature } = req.body;
-
-    if (!wallet || !signature)
-      return res.status(400).json({ message: "Wallet and signature required" });
-
-    const user = await User.findOne({ wallet });
-
-    if (!user)
-      return res.status(404).json({ message: "User not found" });
-
-    // Build message
-    const message = `Login nonce: ${user.nonce}`;
-
-    // Convert message to buffer
-    const messageBuffer = Buffer.from(message);
-    const msgHash = ethUtil.hashPersonalMessage(messageBuffer);
-
-    // Convert signature
-    const sig = ethUtil.fromRpcSig(signature);
-    const publicKey = ethUtil.ecrecover(msgHash, sig.v, sig.r, sig.s);
-    const recoveredWallet = ethUtil.bufferToHex(ethUtil.pubToAddress(publicKey));
-
-    if (recoveredWallet.toLowerCase() !== wallet.toLowerCase()) {
-      return res.status(401).json({ message: "Signature verification failed" });
-    }
-
-    // Success → generate new nonce
-    user.nonce = Math.floor(Math.random() * 1000000).toString();
-    await user.save();
-
-    // Create JWT token
-    const token = jwt.sign(
-      { wallet: wallet },
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" }
-    );
-
-    res.json({ message: "Login success", token, wallet });
-  } catch (err) {
-    res.status(500).json({ message: "Server error verifying signature" });
-  }
-});
-
-
-// Start Server
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
