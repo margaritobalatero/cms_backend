@@ -54,27 +54,20 @@ const articleSchema = new mongoose.Schema({
 const Article = mongoose.model('Article', articleSchema);
 
 // ===== User Schema for MetaMask Login =====
-//const userSchema = new mongoose.Schema({
- // wallet: { type: String, unique: true, required: true },
- // nonce: { type: String, default: () => Math.floor(Math.random() * 1000000).toString() }
-//});
+// const userSchema = new mongoose.Schema({
+//   wallet: { type: String, unique: true, required: true },
+//   nonce: { type: String, default: () => Math.floor(Math.random() * 1000000).toString() }
+// });
 
-// ===== User Schema for MetaMask Login (Multiple Wallets) =====
 const userSchema = new mongoose.Schema({
-  wallets: {
-    type: [String],   // Array of wallet addresses
-    unique: true,     // Ensures no duplicates in the array (optional)
-    required: true,
-    validate: {
-      validator: function(v) {
-        // Optional: Make sure the array has at least one wallet
-        return v.length > 0;
-      },
-      message: 'At least one wallet is required'
+  wallets: [
+    {
+      address: { type: String, required: true },
+      nonce: { type: String, default: () => Math.floor(Math.random() * 1000000).toString() }
     }
-  },
-  nonce: { type: String, default: () => Math.floor(Math.random() * 1000000).toString() }
+  ]
 });
+
 
 const User = mongoose.model("User", userSchema);
 
