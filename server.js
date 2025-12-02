@@ -183,7 +183,6 @@ app.delete('/api/articles/:id', async (req, res) => {
 // ===================== METAMASK AUTH =====================
 
 // ====== Request Nonce ======
-
 app.post("/auth/request-nonce", async (req, res) => {
   try {
     const { wallet } = req.body;
@@ -200,7 +199,7 @@ app.post("/auth/request-nonce", async (req, res) => {
     // If wallet NOT found → create new user entry
     if (!user) {
       user = new User({
-        wallets: [lower], 
+        wallets: [lower],
         nonce: Math.floor(Math.random() * 1000000).toString()
       });
 
@@ -216,14 +215,12 @@ app.post("/auth/request-nonce", async (req, res) => {
   } catch (err) {
     console.error("🔥 NONCE ERROR:", err);
 
-return res.status(500).json({
-  message: "Server error requesting nonce",
-  error: String(err)
-});
-
-
-
-
+    return res.status(500).json({
+      message: "Server error requesting nonce",
+      error: String(err)
+    });
+  }
+});  // <----- THIS CLOSING BRACE WAS MISSING!
 
 // ====== Verify Signature (Login) ======
 app.post("/auth/verify", async (req, res) => {
