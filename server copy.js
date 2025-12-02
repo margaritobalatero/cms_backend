@@ -183,42 +183,44 @@ app.delete('/api/articles/:id', async (req, res) => {
 // ===================== METAMASK AUTH =====================
 
 // ====== Request Nonce ======
-// ====== Request Nonce (MULTI-WALLET VERSION) ======
 app.post("/auth/request-nonce", async (req, res) => {
   try {
     const { wallet } = req.body;
+    if (!wallet) return res.status(400).json({ message: "Wallet address required" });
 
-    if (!wallet) {
-      return res.status(400).json({ message: "Wallet address required" });
-    }
+    let user = await User.findOne({ wallets: wallet });
 
-    const lower = wallet.toLowerCase();
-
-    // Find user containing this wallet
-    let user = await User.findOne({ wallets: lower });
-
-    // Create new user IF wallet is not found
     if (!user) {
-      user = new User({
-        wallets: [lower], // put wallet in array
-        nonce: Math.floor(Math.random() * 1000000).toString()
-      });
-
-      await user.save();
+      // New user → create with one wallet in array
+      user = await User.create({ wallets: [wallet] });
     } else {
-      // Always refresh nonce on login
-      user.nonce = Math.floor(Math.random() * 1000000).toString();
-      await user.save();
+      // Add wallet if not in list
+      if (!user.wallets.includes(wallet)) {
+        user.wallets.push(wallet);
+      }
     }
 
-    res.json({ wallet: lower, nonce: user.nonce });
+    // Update nonce
+    user.nonce = Math.floor(Math.random() * 1000000).toString();
+    await user.save();
 
-  } catch (err) {
-    console.error("🔥 NONCE ERROR:", err);
-    res.status(500).json({ message: "Server error requesting nonce" });
-  }
-});
+    res.json({ wallet, nonce: user.nonce });
 
+//   } catch (err) {
+//     console.error("Nonce Error:", err);
+//     res.status(500).json({ message: "Server error requesting nonce" });
+//   }
+
+
+} catch (err) {
+  console.error("🔥 NONCE ERROR DETAILS:", err.message);
+  console.error(err);
+  return res.status(500).json({
+    message: "Server error requesting nonce",
+    error: err.message
+  });
+}
+ });
 
 
 // ====== Verify Signature (Login) ======
