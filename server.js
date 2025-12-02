@@ -231,7 +231,7 @@ app.post("/auth/verify", async (req, res) => {
     if (!wallet || !signature)
       return res.status(400).json({ message: "Wallet and signature required" });
 
-    const user = await User.findOne({ wallets: wallet });
+    const user = await User.findOne({ wallets: wallet.toLowerCase() });
 
     if (!user)
       return res.status(404).json({ message: "User not found" });
