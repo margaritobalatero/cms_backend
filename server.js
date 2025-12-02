@@ -1,132 +1,78 @@
-require('dotenv').config();
+// server.js
+require("dotenv").config();
+const express = require("express");
+const cors = require("cors");
+const mongoose = require("mongoose");
 const jwt = require("jsonwebtoken");
-const ethUtil = require("ethereumjs-util");
-
-const express = require('express');
-const mongoose = require('mongoose');
-const cors = require('cors');
+const { ethers } = require("ethers");
 
 const app = express();
 
-// --- FIXED CORS ---
+// ---------- CORS FIX ----------
 app.use(cors({
   origin: [
     "http://localhost:3000",
-    "https://cms-frontend-one.vercel.app"   // ✅ put your frontend URL here
+    "https://cms-frontend-one.vercel.app"
   ],
-  methods: ["GET", "POST", "PUT", "DELETE"],
+  methods: ["GET", "POST"],
   allowedHeaders: ["Content-Type", "Authorization"],
-  credentials: true,
+  credentials: true
 }));
 
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 
-// --- Environment Vars ---
-const MONGO_URI = process.env.MONGO_URI;
-const PORT = process.env.PORT || 5000;
+// ---------- DATABASE ----------
+mongoose.connect(process.env.MONGO_URI)
+  .then(() => console.log("MongoDB Connected"))
+  .catch(err => console.log(err));
 
-if (!MONGO_URI) {
-  console.error("❌ Missing MONGO_URI in .env");
-  process.exit(1);
-}
-
-// --- Connect MongoDB ---
-mongoose.connect(MONGO_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
-.then(() => console.log("✅ MongoDB Connected"))
-.catch(err => {
-  console.error("❌ MongoDB Error:", err);
-  process.exit(1);
-});
-
-// Auth middleware
-function requireAuth(req, res, next) {
-  const token = req.headers.authorization?.split(" ")[1];
-  if (!token) return res.status(401).json({ message: "No token" });
-
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded;
-    next();
-  } catch (err) {
-    res.status(401).json({ message: "Invalid token" });
-  }
-}
-
-// --- Article Schema ---
-const articleSchema = new mongoose.Schema({
-  title: String,
-  content: String,
-  createdAt: { type: Date, default: Date.now }
-});
-const Article = mongoose.model("Article", articleSchema);
-
-// --- MetaMask User Schema ---
-const userSchema = new mongoose.Schema({
+const UserSchema = new mongoose.Schema({
   wallet: { type: String, unique: true },
-  nonce: { type: String, default: () => Math.floor(Math.random() * 1000000).toString() }
+  nonce: { type: String }
 });
 
-const User = mongoose.model("User", userSchema);
+const User = mongoose.model("User", UserSchema);
 
-// Helper
-const isValidObjectId = id => mongoose.Types.ObjectId.isValid(id);
-
-/* ===========================================================
-    FIXED METAMASK AUTH (Option A)
-   =========================================================== */
+// ---------- ROUTES ----------
 
 // Request nonce
 app.post("/auth/request-nonce", async (req, res) => {
   try {
-    const wallet = req.body.wallet?.toLowerCase();
-    if (!wallet) return res.status(400).json({ message: "Wallet address required" });
+    const { wallet } = req.body;
+    if (!wallet) return res.status(400).json({ error: "Wallet required" });
+
+    const nonce = Math.floor(Math.random() * 1000000).toString();
 
     let user = await User.findOne({ wallet });
-
     if (!user) {
-      user = await User.create({ wallet });
+      user = new User({ wallet, nonce });
     } else {
-      user.nonce = Math.floor(Math.random() * 1000000).toString();
-      await user.save();
+      user.nonce = nonce;
     }
 
-    res.json({ wallet, nonce: user.nonce });
+    await user.save();
+    res.json({ nonce });
+
   } catch (err) {
-    res.status(500).json({ message: "Server error requesting nonce" });
+    console.log(err);
+    res.status(500).json({ error: "Server error (nonce)" });
   }
 });
 
 // Verify signature
 app.post("/auth/verify", async (req, res) => {
   try {
-    const wallet = req.body.wallet?.toLowerCase();
-    const signature = req.body.signature;
-
-    if (!wallet || !signature)
-      return res.status(400).json({ message: "Wallet and signature required" });
+    const { wallet, signature } = req.body;
 
     const user = await User.findOne({ wallet });
-    if (!user)
-      return res.status(404).json({ message: "User not found" });
+    if (!user) return res.status(400).json({ error: "User not found" });
 
     const message = `Login nonce: ${user.nonce}`;
-    const msgBuffer = Buffer.from(message);
-    const msgHash = ethUtil.hashPersonalMessage(msgBuffer);
+    const recovered = ethers.verifyMessage(message, signature);
 
-    const sig = ethUtil.fromRpcSig(signature);
-    const publicKey = ethUtil.ecrecover(msgHash, sig.v, sig.r, sig.s);
-    const recoveredWallet = ethUtil.bufferToHex(ethUtil.pubToAddress(publicKey));
-
-    if (recoveredWallet.toLowerCase() !== wallet.toLowerCase()) {
-      return res.status(401).json({ message: "Signature verification failed" });
+    if (recovered.toLowerCase() !== wallet.toLowerCase()) {
+      return res.status(400).json({ error: "Invalid signature" });
     }
-
-    // Update nonce after login
-    user.nonce = Math.floor(Math.random() * 1000000).toString();
-    await user.save();
 
     const token = jwt.sign(
       { wallet },
@@ -134,95 +80,14 @@ app.post("/auth/verify", async (req, res) => {
       { expiresIn: "7d" }
     );
 
-    res.json({ message: "Login success", token, wallet });
+    res.json({ token });
+
   } catch (err) {
-    res.status(500).json({ message: "Server error verifying signature" });
+    console.log(err);
+    res.status(500).json({ error: "Server error (verify)" });
   }
 });
 
-/* ===========================================================
-    ARTICLES API
-   =========================================================== */
-
-app.get("/api/articles", async (req, res) => {
-  try {
-    const articles = await Article.find().sort({ createdAt: -1 });
-    res.json(articles);
-  } catch {
-    res.status(500).json({ message: "Error fetching articles" });
-  }
-});
-
-app.get("/api/articles/search", async (req, res) => {
-  try {
-    const q = req.query.q || "";
-    const results = await Article.find({
-      $or: [
-        { title: { $regex: q, $options: "i" }},
-        { content: { $regex: q, $options: "i" }}
-      ]
-    });
-    res.json(results);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Get one
-app.get("/api/articles/:id", async (req, res) => {
-  if (!isValidObjectId(req.params.id))
-    return res.status(400).json({ message: "Invalid ID" });
-
-  try {
-    const a = await Article.findById(req.params.id);
-    if (!a) return res.status(404).json({ message: "Not found" });
-    res.json(a);
-  } catch {
-    res.status(500).json({ message: "Error fetching article" });
-  }
-});
-
-// Create
-app.post("/api/articles", async (req, res) => {
-  try {
-    const newA = await Article.create(req.body);
-    res.status(201).json(newA);
-  } catch {
-    res.status(500).json({ message: "Error creating article" });
-  }
-});
-
-// Update
-app.put("/api/articles/:id", async (req, res) => {
-  if (!isValidObjectId(req.params.id))
-    return res.status(400).json({ message: "Invalid ID" });
-
-  try {
-    const updated = await Article.findByIdAndUpdate(
-      req.params.id,
-      req.body,
-      { new: true }
-    );
-    res.json(updated);
-  } catch {
-    res.status(500).json({ message: "Error updating article" });
-  }
-});
-
-// Delete
-app.delete("/api/articles/:id", async (req, res) => {
-  if (!isValidObjectId(req.params.id))
-    return res.status(400).json({ message: "Invalid ID" });
-
-  try {
-    await Article.findByIdAndDelete(req.params.id);
-    res.json({ message: "Deleted" });
-  } catch {
-    res.status(500).json({ message: "Error deleting article" });
-  }
-});
-
-// Start server
-app.listen(PORT, () =>
-  console.log(`🚀 Server running on port ${PORT}`)
-);
+// ---------- START SERVER ----------
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log("Server running on port", PORT));
