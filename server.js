@@ -65,8 +65,6 @@ const walletSchema = new mongoose.Schema({
   nonce: { type: String, default: () => Math.floor(Math.random() * 1000000).toString() }
 });
 
-await Wallet.create({ userId: user._id, wallet: newWallet });
-
 
 
 const User = mongoose.model("User", userSchema);
