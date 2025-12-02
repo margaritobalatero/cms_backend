@@ -1,7 +1,6 @@
 require('dotenv').config(); // Load .env first
 const jwt = require("jsonwebtoken");
 const ethUtil = require("ethereumjs-util");
-
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -50,15 +49,13 @@ const articleSchema = new mongoose.Schema({
   content: { type: String, required: true },
   createdAt: { type: Date, default: Date.now },
 });
-
 const Article = mongoose.model('Article', articleSchema);
 
-// --- User Schema (MetaMask Login) ---
+// --- User Schema ---
 const userSchema = new mongoose.Schema({
   wallet: { type: String, unique: true, required: true, lowercase: true },
   nonce: { type: String, default: () => Math.floor(Math.random() * 1000000).toString() }
 });
-
 const User = mongoose.model("User", userSchema);
 
 // Helper to validate ObjectId
@@ -214,7 +211,6 @@ app.post("/auth/verify", async (req, res) => {
     const messageBuffer = Buffer.from(message);
     const msgHash = ethUtil.hashPersonalMessage(messageBuffer);
 
-    // Convert signature
     const sig = ethUtil.fromRpcSig(signature);
     const publicKey = ethUtil.ecrecover(msgHash, sig.v, sig.r, sig.s);
     const recoveredWallet = ethUtil.bufferToHex(ethUtil.pubToAddress(publicKey));
@@ -227,7 +223,6 @@ app.post("/auth/verify", async (req, res) => {
     user.nonce = Math.floor(Math.random() * 1000000).toString();
     await user.save();
 
-    // Create JWT token
     const token = jwt.sign(
       { wallet },
       process.env.JWT_SECRET,
