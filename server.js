@@ -7,7 +7,38 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 
 const app = express();
-app.use(cors());
+
+// -----------------------------
+// CORS - OPTION A (Fix for "Failed to get nonce")
+// -----------------------------
+const allowedOrigins = [
+  process.env.FRONTEND_URL,      // Your Vercel frontend
+  "http://localhost:5173",       // Local React dev
+  "http://localhost:3000"        // Alternative React port
+];
+
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      // Allow requests with no origin (curl, Postman, mobile wallets)
+      if (!origin) return callback(null, true);
+
+      // Allow explicitly allowed origins
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      // Allow direct IP-based access (Regex)
+      if (/^https?:\/\/\d+\.\d+\.\d+\.\d+(:\d+)?$/.test(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("CORS blocked for origin: " + origin), false);
+    },
+    credentials: true,
+  })
+);
+
 app.use(express.json());
 
 // --- Environment Variables ---
@@ -43,7 +74,6 @@ function requireAuth(req, res, next) {
   }
 }
 
-
 // --- Article Schema ---
 const articleSchema = new mongoose.Schema({
   title: { type: String, required: true },
@@ -60,7 +90,6 @@ const userSchema = new mongoose.Schema({
 });
 
 const User = mongoose.model("User", userSchema);
-
 
 // Helper to validate ObjectId
 const isValidObjectId = id => mongoose.Types.ObjectId.isValid(id);
@@ -88,11 +117,9 @@ app.get("/api/auth/nonce/:wallet", async (req, res) => {
   }
 });
 
-
 app.get("/api/secret", requireAuth, (req, res) => {
   res.json({ message: "You are logged in!", wallet: req.user.wallet });
 });
-
 
 // Get all articles
 app.get('/api/articles', async (req, res) => {
@@ -192,9 +219,6 @@ app.delete('/api/articles/:id', async (req, res) => {
   }
 });
 
-
-
-
 // ====== Request Nonce ======
 app.post("/auth/request-nonce", async (req, res) => {
   try {
@@ -217,7 +241,6 @@ app.post("/auth/request-nonce", async (req, res) => {
   }
 });
 
-
 // ====== Verify Signature (Login + Signup Auto) ======
 app.post("/auth/verify", async (req, res) => {
   try {
@@ -231,16 +254,13 @@ app.post("/auth/verify", async (req, res) => {
     if (!user)
       return res.status(404).json({ message: "User not found" });
 
-    // Build message
     const message = `Login nonce: ${user.nonce}`;
-
-    // Convert message to buffer
     const messageBuffer = Buffer.from(message);
     const msgHash = ethUtil.hashPersonalMessage(messageBuffer);
 
-    // Convert signature
     const sig = ethUtil.fromRpcSig(signature);
     const publicKey = ethUtil.ecrecover(msgHash, sig.v, sig.r, sig.s);
+
     const recoveredWallet = ethUtil.bufferToHex(ethUtil.pubToAddress(publicKey));
 
     if (recoveredWallet.toLowerCase() !== wallet.toLowerCase()) {
@@ -251,7 +271,6 @@ app.post("/auth/verify", async (req, res) => {
     user.nonce = Math.floor(Math.random() * 1000000).toString();
     await user.save();
 
-    // Create JWT token
     const token = jwt.sign(
       { wallet: wallet },
       process.env.JWT_SECRET,
@@ -264,6 +283,7 @@ app.post("/auth/verify", async (req, res) => {
   }
 });
 
-
 // Start Server
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+app.listen(PORT, () =>
+  console.log(`🚀 Server running on port ${PORT}`)
+);
