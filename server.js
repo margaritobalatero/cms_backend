@@ -67,6 +67,28 @@ const isValidObjectId = id => mongoose.Types.ObjectId.isValid(id);
 
 // ==================== ROUTES ====================
 
+// ====== OLD MetaMask Compatibility: GET nonce ======
+app.get("/api/auth/nonce/:wallet", async (req, res) => {
+  try {
+    const wallet = req.params.wallet.toLowerCase();
+
+    let user = await User.findOne({ wallet });
+
+    if (!user) {
+      user = await User.create({ wallet });
+    } else {
+      user.nonce = Math.floor(Math.random() * 1000000).toString();
+      await user.save();
+    }
+
+    res.json({ wallet, nonce: user.nonce });
+
+  } catch (err) {
+    res.status(500).json({ message: "Server error getting nonce" });
+  }
+});
+
+
 app.get("/api/secret", requireAuth, (req, res) => {
   res.json({ message: "You are logged in!", wallet: req.user.wallet });
 });
