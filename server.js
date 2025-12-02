@@ -1,110 +1,289 @@
-// === Full server.js with MetaMask (Option A) merged ===
+require('dotenv').config(); // Load .env first
+const jwt = require("jsonwebtoken");
+const ethUtil = require("ethereumjs-util");
 
-import express from "express";
-import mongoose from "mongoose";
-import cors from "cors";
-import jwt from "jsonwebtoken";
-import dotenv from "dotenv";
-import { recoverPersonalSignature } from "@metamask/eth-sig-util";
-import { bufferToHex } from "ethereumjs-util";
-
-dotenv.config();
+const express = require('express');
+const mongoose = require('mongoose');
+const cors = require('cors');
 
 const app = express();
+
+// -----------------------------
+// CORS - OPTION A (Fix for "Failed to get nonce")
+// -----------------------------
+const allowedOrigins = [
+  process.env.FRONTEND_URL,      // Your Vercel frontend
+  "http://localhost:5173",       // Local React dev
+  "http://localhost:3000"        // Alternative React port
+];
+
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      // Allow requests with no origin (curl, Postman, mobile wallets)
+      if (!origin) return callback(null, true);
+
+      // Allow explicitly allowed origins
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      // Allow direct IP-based access (Regex)
+      if (/^https?:\/\/\d+\.\d+\.\d+\.\d+(:\d+)?$/.test(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("CORS blocked for origin: " + origin), false);
+    },
+    credentials: true,
+  })
+);
+
 app.use(express.json());
-app.use(cors());
 
-// === MongoDB ===
-mongoose
-  .connect(process.env.MONGO_URI)
-  .then(() => console.log("MongoDB connected"))
-  .catch((err) => console.error(err));
+// --- Environment Variables ---
+const MONGO_URI = process.env.MONGO_URI;
+const PORT = process.env.PORT || 5000;
 
-// === User Schema ===
-const userSchema = new mongoose.Schema({
-  wallet: { type: String, unique: true },
-  nonce: { type: String }
-});
-const User = mongoose.model("User", userSchema);
-
-// === Generate random nonce ===
-function generateNonce() {
-  return Math.floor(Math.random() * 1000000).toString();
+// --- Connect to MongoDB ---
+if (!MONGO_URI) {
+  console.error("❌ ERROR: MONGO_URI is missing from .env");
+  process.exit(1);
 }
 
-// === Request nonce ===
-app.post("/auth/request-nonce", async (req, res) => {
+mongoose.connect(MONGO_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+})
+.then(() => console.log('✅ MongoDB connected'))
+.catch(err => {
+  console.error('❌ MongoDB connection error:', err);
+  process.exit(1);
+});
+
+function requireAuth(req, res, next) {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ message: "No token" });
+
   try {
-    const { wallet } = req.body;
-    if (!wallet) return res.status(400).json({ error: "Wallet missing" });
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    res.status(401).json({ message: "Invalid token" });
+  }
+}
+
+// --- Article Schema ---
+const articleSchema = new mongoose.Schema({
+  title: { type: String, required: true },
+  content: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now },
+});
+
+const Article = mongoose.model('Article', articleSchema);
+
+// ===== User Schema for MetaMask Login =====
+const userSchema = new mongoose.Schema({
+  wallet: { type: String, unique: true, required: true },
+  nonce: { type: String, default: () => Math.floor(Math.random() * 1000000).toString() }
+});
+
+const User = mongoose.model("User", userSchema);
+
+// Helper to validate ObjectId
+const isValidObjectId = id => mongoose.Types.ObjectId.isValid(id);
+
+// ==================== ROUTES ====================
+
+// ====== OLD MetaMask Compatibility: GET nonce ======
+app.get("/api/auth/nonce/:wallet", async (req, res) => {
+  try {
+    const wallet = req.params.wallet.toLowerCase();
 
     let user = await User.findOne({ wallet });
 
     if (!user) {
-      user = await User.create({ wallet, nonce: generateNonce() });
+      user = await User.create({ wallet });
     } else {
-      user.nonce = generateNonce();
+      user.nonce = Math.floor(Math.random() * 1000000).toString();
       await user.save();
     }
 
-    res.json({ nonce: user.nonce });
+    res.json({ wallet, nonce: user.nonce });
+
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
+    res.status(500).json({ message: "Server error getting nonce" });
   }
 });
 
-// === Verify signature ===
+app.get("/api/secret", requireAuth, (req, res) => {
+  res.json({ message: "You are logged in!", wallet: req.user.wallet });
+});
+
+// Get all articles
+app.get('/api/articles', async (req, res) => {
+  try {
+    const articles = await Article.find().sort({ createdAt: -1 });
+    res.json(articles);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error fetching articles' });
+  }
+});
+
+// Search articles
+app.get('/api/articles/search', async (req, res) => {
+  try {
+    const q = req.query.q || "";
+    const results = await Article.find({
+      $or: [
+        { title:   { $regex: q, $options: "i" }},
+        { content: { $regex: q, $options: "i" }}
+      ]
+    });
+    res.json(results);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get single article
+app.get('/api/articles/:id', async (req, res) => {
+  const { id } = req.params;
+  if (!isValidObjectId(id)) return res.status(400).json({ message: 'Invalid article ID' });
+
+  try {
+    const article = await Article.findById(id);
+    if (!article) return res.status(404).json({ message: 'Article not found' });
+    res.json(article);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error fetching article' });
+  }
+});
+
+// Create article
+app.post('/api/articles', async (req, res) => {
+  const { title, content } = req.body;
+  if (!title || !content)
+    return res.status(400).json({ message: 'Title and content are required' });
+
+  try {
+    const article = new Article({ title, content });
+    const saved = await article.save();
+    res.status(201).json(saved);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error creating article' });
+  }
+});
+
+// Update article
+app.put('/api/articles/:id', async (req, res) => {
+  const { id } = req.params;
+  const { title, content } = req.body;
+
+  if (!isValidObjectId(id))
+    return res.status(400).json({ message: 'Invalid article ID' });
+
+  if (!title && !content)
+    return res.status(400).json({ message: 'At least one of title or content must be provided' });
+
+  try {
+    const article = await Article.findById(id);
+    if (!article) return res.status(404).json({ message: 'Article not found' });
+
+    if (title) article.title = title;
+    if (content) article.content = content;
+
+    const updated = await article.save();
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error updating article' });
+  }
+});
+
+// Delete article
+app.delete('/api/articles/:id', async (req, res) => {
+  const { id } = req.params;
+
+  if (!isValidObjectId(id))
+    return res.status(400).json({ message: 'Invalid article ID' });
+
+  try {
+    const article = await Article.findById(id);
+    if (!article) return res.status(404).json({ message: 'Article not found' });
+
+    await article.deleteOne();
+    res.json({ message: 'Article deleted' });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error deleting article' });
+  }
+});
+
+// ====== Request Nonce ======
+app.post("/auth/request-nonce", async (req, res) => {
+  try {
+    const { wallet } = req.body;
+    if (!wallet) return res.status(400).json({ message: "Wallet address required" });
+
+    let user = await User.findOne({ wallet });
+
+    if (!user) {
+      user = await User.create({ wallet });
+    } else {
+      // Update nonce every request
+      user.nonce = Math.floor(Math.random() * 1000000).toString();
+      await user.save();
+    }
+
+    res.json({ wallet, nonce: user.nonce });
+  } catch (err) {
+    res.status(500).json({ message: "Server error requesting nonce" });
+  }
+});
+
+// ====== Verify Signature (Login + Signup Auto) ======
 app.post("/auth/verify", async (req, res) => {
   try {
     const { wallet, signature } = req.body;
+
+    if (!wallet || !signature)
+      return res.status(400).json({ message: "Wallet and signature required" });
+
     const user = await User.findOne({ wallet });
-    if (!user) return res.status(400).json({ error: "User not found" });
+
+    if (!user)
+      return res.status(404).json({ message: "User not found" });
 
     const message = `Login nonce: ${user.nonce}`;
-    const msgBufferHex = bufferToHex(Buffer.from(message, "utf8"));
+    const messageBuffer = Buffer.from(message);
+    const msgHash = ethUtil.hashPersonalMessage(messageBuffer);
 
-    const recovered = recoverPersonalSignature({
-      data: msgBufferHex,
-      signature
-    });
+    const sig = ethUtil.fromRpcSig(signature);
+    const publicKey = ethUtil.ecrecover(msgHash, sig.v, sig.r, sig.s);
 
-    if (recovered.toLowerCase() !== wallet.toLowerCase()) {
-      return res.status(401).json({ error: "Signature mismatch" });
+    const recoveredWallet = ethUtil.bufferToHex(ethUtil.pubToAddress(publicKey));
+
+    if (recoveredWallet.toLowerCase() !== wallet.toLowerCase()) {
+      return res.status(401).json({ message: "Signature verification failed" });
     }
 
-    // Signature valid → create JWT
+    // Success → generate new nonce
+    user.nonce = Math.floor(Math.random() * 1000000).toString();
+    await user.save();
+
     const token = jwt.sign(
-      { wallet },
+      { wallet: wallet },
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
     );
 
-    // regenerate nonce
-    user.nonce = generateNonce();
-    await user.save();
-
-    res.json({ token });
+    res.json({ message: "Login success", token, wallet });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
+    res.status(500).json({ message: "Server error verifying signature" });
   }
 });
 
-// Protected route example
-app.get("/profile", (req, res) => {
-  try {
-    const auth = req.headers.authorization;
-    if (!auth) return res.status(401).json({ error: "Missing token" });
-
-    const token = auth.replace("Bearer ", "");
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-    res.json({ wallet: decoded.wallet });
-  } catch (err) {
-    res.status(401).json({ error: "Invalid token" });
-  }
-});
-
-// === Start server ===
-app.listen(5000, () => console.log("Server running on port 5000"));
+// Start Server
+app.listen(PORT, () =>
+  console.log(`🚀 Server running on port ${PORT}`)
+);
