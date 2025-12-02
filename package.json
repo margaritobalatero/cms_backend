@@ -13,6 +13,7 @@
   "description": "",
   "dependencies": {
     "body-parser": "^2.2.0",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dompurify": "^3.2.6",
     "dotenv": "^17.2.3",
