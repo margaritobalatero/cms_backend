@@ -184,6 +184,7 @@ app.delete('/api/articles/:id', async (req, res) => {
 
 // ====== Request Nonce ======
 // ====== Request Nonce (MULTI-WALLET VERSION) ======
+// ====== Request Nonce (MULTI-WALLET VERSION) ======
 app.post("/auth/request-nonce", async (req, res) => {
   try {
     const { wallet } = req.body;
@@ -194,19 +195,19 @@ app.post("/auth/request-nonce", async (req, res) => {
 
     const lower = wallet.toLowerCase();
 
-    // Find user containing this wallet
+    // CORRECT multi-wallet check
     let user = await User.findOne({ wallets: lower });
 
-    // Create new user IF wallet is not found
+    // If not found, create new user WITH wallets array
     if (!user) {
       user = new User({
-        wallets: [lower], // put wallet in array
+        wallets: [lower],  // <--------- IMPORTANT
         nonce: Math.floor(Math.random() * 1000000).toString()
       });
 
-      await user.save();
+      await user.save();  // <-------- New wallets now save successfully
     } else {
-      // Always refresh nonce on login
+      // Refresh nonce for existing user
       user.nonce = Math.floor(Math.random() * 1000000).toString();
       await user.save();
     }
@@ -215,9 +216,10 @@ app.post("/auth/request-nonce", async (req, res) => {
 
   } catch (err) {
     console.error("🔥 NONCE ERROR:", err);
-    res.status(500).json({ message: "Server error requesting nonce" });
+    return res.status(500).json({ message: "Server error requesting nonce" });
   }
 });
+
 
 
 
