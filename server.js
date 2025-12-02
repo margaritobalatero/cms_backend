@@ -183,8 +183,7 @@ app.delete('/api/articles/:id', async (req, res) => {
 // ===================== METAMASK AUTH =====================
 
 // ====== Request Nonce ======
-// ====== Request Nonce (MULTI-WALLET VERSION) ======
-// ====== Request Nonce (MULTI-WALLET VERSION) ======
+
 app.post("/auth/request-nonce", async (req, res) => {
   try {
     const { wallet } = req.body;
@@ -195,19 +194,19 @@ app.post("/auth/request-nonce", async (req, res) => {
 
     const lower = wallet.toLowerCase();
 
-    // CORRECT multi-wallet check
+    // Correct lookup for multi-wallet user
     let user = await User.findOne({ wallets: lower });
 
-    // If not found, create new user WITH wallets array
+    // If wallet NOT found → create new user entry
     if (!user) {
       user = new User({
-        wallets: [lower],  // <--------- IMPORTANT
+        wallets: [lower], 
         nonce: Math.floor(Math.random() * 1000000).toString()
       });
 
-      await user.save();  // <-------- New wallets now save successfully
+      await user.save();
     } else {
-      // Refresh nonce for existing user
+      // Wallet exists → generate new nonce for login
       user.nonce = Math.floor(Math.random() * 1000000).toString();
       await user.save();
     }
@@ -219,7 +218,6 @@ app.post("/auth/request-nonce", async (req, res) => {
     return res.status(500).json({ message: "Server error requesting nonce" });
   }
 });
-
 
 
 
